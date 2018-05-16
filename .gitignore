@@ -1,0 +1,9 @@
+**.list
+**.map
+**.o
+**.elf
+kernel.img
+kernel7.img
+kernel8.img
+-kernel/build/*
+loader/build/*
