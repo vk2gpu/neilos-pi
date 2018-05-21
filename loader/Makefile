@@ -10,7 +10,10 @@
 ARMGNU ?= arm-none-eabi
 
 # Setup to build for Pi2...for now.
-FLAGS = -mcpu=cortex-a7 -mfpu=neon-fp-armv8 -mfloat-abi=hard -march=armv8-a
+ASM_FLAGS = -mcpu=cortex-a7 -mfpu=neon-fp-armv8 -mfloat-abi=hard -march=armv8-a
+
+# Setup C compiler.
+C_FLAGS = -mcpu=cortex-a7 -mfloat-abi=hard -nodefaultlibs -nostdlib -nostartfiles -ffreestanding -Wall -O2
 
 # The intermediate directory for compiled object files.
 BUILD = build/
@@ -32,7 +35,8 @@ LINKER = kernel7.ld
 
 # The names of all object files that must be generated. Deduced from the 
 # assembly code files in source.
-OBJECTS := $(patsubst $(SOURCE)%.s,$(BUILD)%.o,$(wildcard $(SOURCE)*.s))
+ASM_OBJECTS := $(patsubst $(SOURCE)%.s,$(BUILD)%.o,$(wildcard $(SOURCE)*.s))
+C_OBJECTS := $(patsubst $(SOURCE)%.c,$(BUILD)%.o,$(wildcard $(SOURCE)*.c))
 
 # Rule to make everything.
 all: $(TARGET) $(LIST)
@@ -42,26 +46,34 @@ rebuild: all
 
 # Rule to make the listing file.
 $(LIST) : $(BUILD)output.elf
-	$(ARMGNU)-objdump -d $(BUILD)output.elf > $(LIST)
+	@$(ARMGNU)-objdump -d $(BUILD)output.elf > $(LIST)
 
 # Rule to make the image file.
 $(TARGET) : $(BUILD)output.elf
-	$(ARMGNU)-objcopy $(BUILD)output.elf -O binary $(TARGET) 
+	@echo objcopy output.elf -> $(TARGET)
+	@$(ARMGNU)-objcopy $(BUILD)output.elf -O binary $(TARGET) 
 
 # Rule to make the elf file.
-$(BUILD)output.elf : $(OBJECTS) $(LINKER)
-	$(ARMGNU)-ld --no-undefined $(OBJECTS) -Map $(MAP) -o $(BUILD)output.elf -T $(LINKER)
+$(BUILD)output.elf : $(ASM_OBJECTS) $(C_OBJECTS) $(LINKER)
+	@echo Linking output.elf
+	@$(ARMGNU)-ld --no-undefined $(ASM_OBJECTS) $(C_OBJECTS) -Map $(MAP) -o $(BUILD)output.elf -T $(LINKER)
 
-# Rule to make the object files.
-$(BUILD)%.o: $(SOURCE)%.s $(BUILD)
-	$(ARMGNU)-as ${FLAGS} -I $(SOURCE) $< -o $@
+# Rule to make the ASM object files.
+$(BUILD)%.o : $(SOURCE)%.s $(BUILD)
+	@echo Assembling $<
+	@$(ARMGNU)-as ${ASM_FLAGS} -I $(SOURCE) $< -o $@
+
+# Rule to make the C object files.
+$(BUILD)%.o : $(SOURCE)%.c $(BUILD)
+	@echo Compiling $<
+	@$(ARMGNU)-gcc ${C_FLAGS} -c -I $(SOURCE) $< -o $@
 
 $(BUILD):
-	mkdir -p $@
+	@mkdir -p $@
 
 # Rule to clean files.
 clean : 
-	-rm -rf $(BUILD)
-	-rm -f $(TARGET)
-	-rm -f $(LIST)
-	-rm -f $(MAP)
+	@-rm -rf $(BUILD)
+	@-rm -f $(TARGET)
+	@-rm -f $(LIST)
+	@-rm -f $(MAP)
