@@ -6,14 +6,11 @@ void usleep(u32 us)
 	while(end > *REG32(TIMER_BASE + 4));
 }
 
-#define GPIO_FN_INPUT (0x0)
-#define GPIO_FN_OUTPUT (0x1)
-#define GPIO_FN_ALT0 (0x4)
-#define GPIO_FN_ALT1 (0x5)
-#define GPIO_FN_ALT2 (0x6)
-#define GPIO_FN_ALT3 (0x7)
-#define GPIO_FN_ALT4 (0x3)
-#define GPIO_FN_ALT5 (0x2)
+void csleep(u32 c)
+{
+	while(c-- != 0)
+		asm("nop");
+}
 
 static u32 s_gpiosel[6];
 
@@ -50,6 +47,8 @@ void gpio_write(u32 i, u32 v)
 #define DBGIO_SRCLK 5
 #define DBGIO_SER 6
 
+void dbgio_write(u8 v);
+
 void dbgio_init()
 {
 	gpio_setup(DBGIO_RCLK, GPIO_FN_OUTPUT);
@@ -58,10 +57,21 @@ void dbgio_init()
 	gpio_write(DBGIO_RCLK, 0);
 	gpio_write(DBGIO_SRCLK, 0);
 	gpio_write(DBGIO_SER, 0);
+
+	// Run a sequence to signify that initialization is complete.
+	dbgio_write(0xff);
+	usleep(1 << 15);
+	for(u8 i = 0; i < 8; ++i)
+	{
+		dbgio_write(1 << i);
+		usleep(1 << 17);
+	}
+	dbgio_write(0);
 }
 
 void dbgio_write(u8 v)
 {
+	// Bit-bang the 8 bits to the shift register.
 	const u32 wait_us = 1;
 	gpio_write(DBGIO_RCLK, 0);
 	for(i32 i = 7; i >= 0; --i)
@@ -76,22 +86,93 @@ void dbgio_write(u8 v)
 	usleep(wait_us);
 }
 
+
+
+void uart_init(u32 baudrate)
+{
+	// Configure alt function 0 for pins 14 + 15.
+	// ALT0 = UART0.
+	// ALT5 = UART1.
+	gpio_setup(14, GPIO_FN_ALT5);
+	gpio_setup(15, GPIO_FN_ALT5);
+
+	// Pull down pins and wait at least 150 cycles.
+	*REG32(GPPUD) = 0;
+	csleep(150);
+	*REG32(GPPUDCLK0) = (1 << 14) | (1 << 15);
+	csleep(150);
+	*REG32(GPPUDCLK0) = 0;
+
+	// Enable mini UART and setup.
+	*REG32(AUX_ENABLES) = AUX_ENABLES_MU;
+	*REG32(AUX_MU_IER_REG) = 0b00000000;
+	*REG32(AUX_MU_IIR_REG) = 0b11000110; // 0b11000000 (enable both fifos.) | 0b00000100 (always read zero) | 0b00000010 (clear the receive FIFO)
+	*REG32(AUX_MU_LCR_REG) = 0b00000011; // Should just be 1 for 8-bit mode, but doesn't work?
+	*REG32(AUX_MU_MCR_REG) = 0b00000000;
+	*REG32(AUX_MU_LSR_REG) = 0b00000000;
+	*REG32(AUX_MU_MSR_REG) = 0b00000000;
+	*REG32(AUX_MU_CNTL_REG) = 0b00000011;	// Enable tx + rx.
+	*REG32(AUX_MU_BAUD_REG) = ((SYSTEM_CLOCK_HZ / baudrate) / 8) - 1;
+}
+
+u32 uart_recv_blocking()
+{
+	for(;;)
+		if(*REG32(AUX_MU_LSR_REG) & 0b00000001) // Data ready?
+			break;
+
+	return *REG32(AUX_MU_IO_REG) & 0xff;
+}
+
+void uart_send_blocking(u8 c)
+{
+	for(;;)
+		if(*REG32(AUX_MU_LSR_REG) & 0b00100000) // Is transmitter idle?
+			break;
+	*REG32(AUX_MU_IO_REG) = c;
+}
+
+u32 uart_recv(u8* o)
+{
+	if(*REG32(AUX_MU_LSR_REG) & 0b00000001) // Data ready?
+	{
+		*o = *REG32(AUX_MU_IO_REG);
+		return 1;
+	}
+	return 0;
+}
+
+void kprint(const char* s)
+{
+	while(*s != '\0')
+		uart_send_blocking(*s++);
+}
+
 void loader_main()
 {
 	gpio_init();
 	dbgio_init();
+	uart_init(115200);
 
 	u8 i = 0;
 
+	// TODO: VT-100 lib.
+	uart_send_blocking(27);
+	kprint("[2J");
+	uart_send_blocking(27);
+	kprint("[;H");
+	kprint("Welcome to NeilOS-Pi!\r\n\r\n>");
+
 	for(;;)
 	{
-		dbgio_write(i++);
-		usleep(1 << 17);
+		dbgio_write(i);
 
-		//gpio_write(6, 0);
-		
-		//gpio_write(6, 1);
-		//usleep(1 << 17);
+		u8 c;
+		if(uart_recv(&c))
+		{
+			uart_send_blocking(c);
+			++i;
+		}
 	}
 }
 
